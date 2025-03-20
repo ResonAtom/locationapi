@@ -41,4 +41,4 @@ Merge the variables with the locations, ensuring that:
 - The output should be a new object that represents each location with its resolved variables.
 
 
-External API example data:
+External API example data: See mockdata.ts

@@ -2,11 +2,11 @@ import { Hono } from '@hono/hono'
 import { ExternalLocationOb, ExternalVarOb, Merged, MergedVarValue } from './types.ts'
 import { mockExternalLocations, mockExternalVars } from './mockdata.ts'
 
-const useMockData = true // Use mockdata.ts instead of fetching external data
-const cacheExternalData = false // false=Fetch the data once at startup and cache that.  true=Fetch it on every incoming request.
+const selfTriggerDefaultPath = '/trigger/4/BrandName,StoreHours' // Example URL to trigger a POST
+const useMockData = false // Use mockdata.ts instead of fetching external data.  Preempts cacheExternalData.
+const cacheExternalData = false // false=Fetch the data once at startup and cache that.  true=Fetch it on every incoming request (or if previous fetch failed).
 const externalLocationsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/locations'
 const externalVarsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/variables'
-const selfTriggerDefaultPath = '/trigger/4/BrandName,StoreHours' // Example URL to trigger a POST
 
 // Set up Hono and have Deno serve
 const app = new Hono()
@@ -29,9 +29,13 @@ app.get('/trigger/:orgId/:csvVars', async (c) => {
     body: JSON.stringify(varsArray),
   })
 
-  const resultJson = await result.json()
+  const resultJson = await result.json().catch((error) => {
+    const errorText = 'During trigger: Failed to .json() internal POST response'
+    console.error(errorText, error)
+    return { error: errorText }
+  })
 
-  return c.html(`<p>Self-POST has been triggered!  Result below.  <a href='${selfTriggerDefaultPath}'>POST Again</a></p>
+  return c.html(`<p>Self-POST has been triggered, response below.  <a href='${selfTriggerDefaultPath}'>POST again with default values.</a></p>
     <pre>${JSON.stringify(resultJson, null, 2)}</pre>`
   )
 })
@@ -43,8 +47,17 @@ app.post('/api/locations/:orgId', async (c) => {
   if(isNaN(orgId)) {
     return c.json({ error: 'orgId must be a number' }, 400)
   }
-  const requestedKeys = await c.req.json() // Example body: ["PhoneNumber", "BrandName"]
-  console.log(`---\nRequest from orgId ${orgId} for keys: ${requestedKeys.join(', ')}.`)
+  const requestedKeys = await c.req.json().catch((error) => { // Example valid body: ["PhoneNumber", "BrandName"]
+    const errorText = 'In API locations: Error parsing request body as .json()'
+    console.error(errorText, error)
+    return errorText
+  })
+  if(!Array.isArray(requestedKeys)) {
+    return c.json({ error: 'POST body must be a JSON array of strings', requestedKeys }, 400)
+  }
+
+  // Vars are valid, continue
+  console.log(`---\nRequest for orgId ${orgId} and keys: ${requestedKeys.join(', ')}.`)
 
   // Get external data (mocked, cached, or fetched)
   const [extLocations, extVars] = await Promise.all([ getExternalLocations(), getExternalVars() ])
@@ -81,31 +94,41 @@ app.post('/api/locations/:orgId', async (c) => {
   // const knownVariableKeys = externalVars.map((v: ExternalVarOb) => v.key)
   // TODO: 'Utilize Typescript to ensure that the JSON response matches the variables specified in the user's query.'
   // As-is, we are already using the given keys, so the JSON response strings will match the query strings.
-  // If there's a way to maintain the types from an external string using generics or guards, I don't know it.
+  // If there's a TS way to maintain the types from an external string using generics or guards, I don't know it.
+  // We could create a shape for known literal keys and use that, but it wouldn't validate.  
+  // A potential solution would be something like Zod.  I think TypeORM has validation as well.
 
   console.log('Merged:', merged)
   return c.json(merged)
 })
 
-// Fetch/cache/use external data as needed
+// Fetch/cache/use (memoize) external data as needed
 let cachedLocations: ExternalLocationOb[] | null = null
-let cachedVars: ExternalVarOb[] | null = null
 async function getExternalLocations(): Promise<ExternalLocationOb[]> {
   if (useMockData) return mockExternalLocations
   if (cacheExternalData && cachedLocations) return cachedLocations
 
   const response = await fetch(externalLocationsUrl)
-  const locations = await response.json()
+  const locations = await response.json().catch((error) => {
+    const errorText = 'In getExternalLocations: Error fetching external locations.'
+    console.error(errorText, error)
+    throw new Error(errorText)
+  })
   if (cacheExternalData) cachedLocations = locations
 
   return locations
 }
+let cachedVars: ExternalVarOb[] | null = null
 async function getExternalVars(): Promise<ExternalVarOb[]> {
   if (useMockData) return mockExternalVars
   if (cacheExternalData && cachedVars) return cachedVars
 
   const response = await fetch(externalVarsUrl)
-  const vars = await response.json()
+  const vars = await response.json().catch((error) => {
+    const errorText = 'In getExternalVars: Error fetching external variables.'
+    console.error(errorText, error)
+    throw new Error(errorText)
+  })
   if (cacheExternalData) cachedVars = vars
 
   return vars
