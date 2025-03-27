@@ -5,8 +5,10 @@ import { mockExternalLocations, mockExternalVars } from './mockdata.ts'
 const selfTriggerDefaultPath = '/trigger/4/BrandName,StoreHours' // Example URL to trigger a POST
 const useMockData = false // Use mockdata.ts instead of fetching external data.  Preempts cacheExternalData.
 const cacheExternalData = false // false=Fetch the data once at startup and cache that.  true=Fetch it on every incoming request (or if previous fetch failed).
-const externalLocationsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/locations'
-const externalVarsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/variables'
+// const externalLocationsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/locations'
+// const externalVarsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/variables'
+const externalLocationsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/locations?includeGroup=true'
+const externalVarsUrl = 'https://swivl-interview-e61c73ef3cf5.herokuapp.com/api/variables?includeGroup=true'
 
 // Set up Hono and have Deno serve
 const app = new Hono()
@@ -63,30 +65,44 @@ app.post('/api/locations/:orgId', async (c) => {
   const [extLocations, extVars] = await Promise.all([ getExternalLocations(), getExternalVars() ])
 
   // Filter down to only this org's locations and variables
-  const locations = extLocations.filter((loc: ExternalLocationOb) => loc.orgId === orgId)
+  const orgLocations = extLocations.filter((loc: ExternalLocationOb) => loc.orgId === orgId)
   const varsAll = extVars.filter((v: ExternalVarOb) => v.orgId === orgId)
   const varsRequested = varsAll.filter((v: ExternalVarOb) => requestedKeys.includes(v.key)) // Only include requested keys
+
+  // Next: Turn this into the desired API endpoint format.
 
   // Loop over the vars, and assign each one by its location
   const varsOrgWide: Record<string, MergedVarValue> = {}
   const varsPerLocation: Record<number, Record<string, MergedVarValue>> = {}
+  const varsPerGroup: Record<number, Record<string, MergedVarValue>> = {}
+
+  // It will always have orgId, may have no others, may have groupId, may have locationId.  Will never have both groupId and locationId.
   varsRequested.forEach((v: ExternalVarOb) => {
-    if(v.locationId === null) {
+    if(v.locationId === null && v.groupId === null) { // Org record
       varsOrgWide[v.key] = { value: v.value, inheritance: 'org' }
     }
-    else {
+    else if(v.groupId !== null) { // Group record
+      varsPerGroup[v.groupId] = varsPerGroup[v.groupId] || {}
+      varsPerGroup[v.groupId][v.key] = { value: v.value, inheritance: 'group' }
+    }
+    else if(v.locationId !== null) { // Location record
       varsPerLocation[v.locationId] = varsPerLocation[v.locationId] || {}
       varsPerLocation[v.locationId][v.key] = { value: v.value, inheritance: 'location' }
     }
+    else {
+      console.error('Unknown record state!')
+    }
   })
+  // console.log(varsPerGroup)
 
   // Create merged format
-  const merged: Merged[] = locations.map((loc: ExternalLocationOb) => {
+  const merged: Merged[] = orgLocations.map((loc: ExternalLocationOb) => {
     return {
       location: loc,
       variables: {
         ...varsOrgWide || {},
-        ...varsPerLocation[loc.id] || {}, // If exists, overrides org-wide variables
+        ...varsPerGroup[loc.groupId] || {}, // If exists, overrides variables
+        ...varsPerLocation[loc.id] || {}, // If exists, overrides variables
       }
     }
   })
@@ -97,6 +113,8 @@ app.post('/api/locations/:orgId', async (c) => {
   // If there's a TS way to maintain the types from an external string using generics or guards, I don't know it.
   // We could create a shape for known literal keys and use that, but it wouldn't validate.  
   // A potential solution would be something like Zod.  I think TypeORM has validation as well.
+
+  // Call: Customers have tons of locations and don't want to have to fill in info for every one.
 
   console.log('Merged:', merged)
   return c.json(merged)

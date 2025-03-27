@@ -1,13 +1,17 @@
 export interface ExternalVarOb {
   id: number
-  orgId: number
-  locationId: number | null
   key: string
   value: string
+  
+  orgId: number | null
+  groupId: number | null
+  locationId: number | null
 }
+
 export interface ExternalLocationOb {
   id: number
   orgId: number
+  groupId: number
 }
 
 export interface Merged {
